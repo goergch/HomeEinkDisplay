@@ -5,16 +5,23 @@
 #include <WiFiUdp.h>
 #include "private_wifi.h"
 #include "weather_icons.h"
-#include "private_weather_api.h"
-
+#include <HttpClient.h>
+#include <ArduinoJson.h>
+#include <TimeLib.h>
 
 
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_WPA_KEY;
 const char* mqtt_server = "raspberrypi3.fritz.box";
 
+#define ENERGY_VALUES_COUNT 25
 
+typedef struct {
+  int hour = 0;
+  float value = 0.0;
+} EnergyValue;
 
+EnergyValue energyValues[ENERGY_VALUES_COUNT];
 // String sWeatherAPI =  WEATHER_API_KEY;
 // String sWeatherLOC =  WEATHER_API_LOC;
 // const String sWeatherURL =  "https://api.darksky.net/forecast/";
@@ -82,6 +89,9 @@ void SendToSleep(int mins);
 void mqtt_callback(char* topic, byte* payload, unsigned int length);
 void finishAndSleep();
 void printMoisture(uint16_t x, uint16_t y);
+void GetEnergyOverview();
+bool parseEnergyOverview(String jsonString);
+void PrintEnergyOverview(uint16_t x, uint16_t y);
 
 void setup() {
   Serial.begin(115200);
@@ -125,8 +135,11 @@ void setup() {
       Serial.print("failed, rc=");
       Serial.print(client.state());
     }
+    GetEnergyOverview();
 
 }
+
+
 
 void loop() {
 
@@ -145,6 +158,7 @@ void finishAndSleep(){
     printUpdateTime(5, display.height() - 5);
     DisplayWXicon(0,0,"rain - day",GxEPD_BLACK);
     printMoisture(100,100);
+    PrintEnergyOverview(300,20);
   }while(display.nextPage());
 
   //
@@ -167,6 +181,22 @@ void printMoisture(uint16_t x, uint16_t y){
   display.println("%");
 }
 
+void PrintEnergyOverview(uint16_t x, uint16_t y){
+  Serial.println("Printing energy overview");
+  display.setFont(NULL);
+  display.setTextColor(GxEPD_BLACK);
+  for(int i = 0; i< 24;i++ ){
+      display.setCursor(x, y + i * 10);
+      display.print((energyValues[i].hour + 1));
+      display.print(": ");
+      display.print(energyValues[i].value,1);
+
+      Serial.print((energyValues[i].hour + 1));
+      Serial.print(": ");
+      Serial.println(energyValues[i].value,1);
+  }
+}
+
 void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   Serial.print("Message arrived [");
   Serial.print(topic);
@@ -186,8 +216,6 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   }
 
 }
-
-
 
 void helloWorld()
 {
@@ -232,6 +260,61 @@ void DisplayWXicon(int x, int y, String IconName, uint16_t color) {
   else if (IconName == "13n" || IconName == "snow - night") display.drawBitmap(x, y, gImage_13n, 48, 48, color);
   else if (IconName == "50d" || IconName == "50n"  || IconName == "fog") display.drawBitmap(x, y, gImage_50n, 48, 48, color);
   else     display.drawBitmap(x, y, gImage_nodata, 48, 48, color);
+}
+
+void GetEnergyOverview(){
+  	HTTPClient httpClient;
+    String address = "http://raspberrypi3bp:8086/query";
+    String params = "q=SELECT difference(first(\"value\")) AS \"sum_value\" FROM \"telegraf\".\"autogen\".\"mqtt_consumer\" WHERE \"topic\"='fhem/energy/total/kwh/state' AND time < now() and time > now() - 1d GROUP BY time(1h)";
+    params.replace(" ", "%20");
+    httpClient.begin(address + "?" + params);
+
+    httpClient.setAuthorization("chronograf", "chronograf");
+    Serial.println("Get Energy Overview");
+    int httpCode = httpClient.GET();
+
+    if (httpCode > 0) {
+      if(httpCode == 200){
+        parseEnergyOverview(httpClient.getString());
+      }else{
+        Serial.println(httpClient.getString());
+      }
+    }
+    else {
+      Serial.printf("Request failed: %s\n", httpClient.errorToString(httpCode).c_str());
+    }
+
+    httpClient.end();
+
+}
+
+bool parseEnergyOverview(String jsonString){
+    DynamicJsonBuffer jsonBuffer(1024);
+    JsonObject& root = jsonBuffer.parseObject(jsonString);
+    if (!root.success()) {
+      Serial.println(F("jsonBuffer.parseObject() failed"));
+      return false;
+    }
+    JsonVariant values = root["results"][0]["series"][0]["values"];
+
+    int count = values.size();
+    for(int i= 0; i < count; i++){
+      if( i >= ENERGY_VALUES_COUNT) {
+        Serial.println("Too much values in energy summary");
+      }
+      String timeString = values[i][0];
+      String valueString = values[i][1];
+
+      int Year, Month, Day, Hour, Minute, Second ;
+      sscanf(timeString.c_str(), "%d-%d-%dT%d:%d:%dZ", &Year, &Month, &Day, &Hour, &Minute, &Second);
+
+      energyValues[i].hour = Hour;
+      energyValues[i].value = valueString.toFloat();
+
+
+    }
+
+    return true;
 }
 
 // bool showWeather_conditionsFIO(String jsonFioString ) {
