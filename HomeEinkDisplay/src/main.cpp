@@ -9,6 +9,8 @@
 #include <ArduinoJson.h>
 #include <TimeLib.h>
 
+#undef min
+#define min(a,b) ((a)<(b)?(a):(b))
 
 const char* ssid = WIFI_SSID;
 const char* password = WIFI_WPA_KEY;
@@ -92,6 +94,8 @@ void printMoisture(uint16_t x, uint16_t y);
 void GetEnergyOverview();
 bool parseEnergyOverview(String jsonString);
 void PrintEnergyOverview(uint16_t x, uint16_t y);
+void DrawDottedHLine(uint16_t x, uint16_t y, uint16_t length, uint16_t interval,  uint16_t color);
+void DrawDottedVLine(uint16_t x, uint16_t y, uint16_t length, uint16_t interval,  uint16_t color);
 
 void setup() {
   Serial.begin(115200);
@@ -154,11 +158,11 @@ void loop() {
 void finishAndSleep(){
   do{
     helloWorld();
-    printCross();
+    // printCross();
     printUpdateTime(5, display.height() - 5);
     DisplayWXicon(0,0,"rain - day",GxEPD_BLACK);
     printMoisture(100,100);
-    PrintEnergyOverview(300,20);
+    PrintEnergyOverview(320,0);
   }while(display.nextPage());
 
   //
@@ -182,18 +186,47 @@ void printMoisture(uint16_t x, uint16_t y){
 }
 
 void PrintEnergyOverview(uint16_t x, uint16_t y){
+  const int BAR_WIDTH = 12;
+  const float MAX_VALUE = 2;
   Serial.println("Printing energy overview");
   display.setFont(NULL);
   display.setTextColor(GxEPD_BLACK);
-  for(int i = 0; i< 24;i++ ){
-      display.setCursor(x, y + i * 10);
-      display.print((energyValues[i].hour + 1));
-      display.print(": ");
-      display.print(energyValues[i].value,1);
 
-      Serial.print((energyValues[i].hour + 1));
-      Serial.print(": ");
-      Serial.println(energyValues[i].value,1);
+  display.drawFastHLine(x + 3, y + 192 - 10, 320 - 6, GxEPD_BLACK);
+  display.drawFastVLine(x + 18, y +10, 192 - 13, GxEPD_BLACK);
+
+  display.setCursor(x, y);
+  display.print("kWh");
+
+  display.setCursor(x, y + 180 - 43 * 1);
+  display.print(MAX_VALUE * 0.25, 1);
+  DrawDottedHLine(x + 18,y + 182 - 43 * 1, 302, 7, GxEPD_BLACK);
+  display.setCursor(x, y + 180 - 43 * 2);
+  display.print(MAX_VALUE * 0.5, 1);
+  DrawDottedHLine(x + 18,y + 182 - 43 * 2, 302, 7, GxEPD_BLACK);
+  display.setCursor(x, y + 180 - 43 * 3);
+  display.print(MAX_VALUE * 0.75, 1);
+  DrawDottedHLine(x + 18,y + 182 - 43 * 3, 302, 7, GxEPD_BLACK);
+
+  for(int i = 1; i < 25; i++){
+    display.drawPixel(x + 18 + i * BAR_WIDTH, 1 + 192 - 9, GxEPD_BLACK);
+  }
+
+  for(int i = 0; i< 25; i+=2 ){
+    int hour = (energyValues[i].hour + 1)%24;
+    int offset = (hour > 9)?0:3;
+    display.setCursor(x + 19 + i * BAR_WIDTH + offset, y + 192 - 7);
+    display.print(hour);
+  }
+  for(int i = 0; i< 25; i++ ){
+    int xUL = x + 19;
+    int yUL = y + 192 - 10;
+    int height = (int)(min(energyValues[i].value / MAX_VALUE, 1.0) * 172.0 );
+    if (energyValues[i].value < MAX_VALUE){
+        display.fillRect(xUL + 1 + i * BAR_WIDTH, yUL - height,9, height,GxEPD_BLACK);
+    }else{
+        display.fillRect(xUL + 1 + i * BAR_WIDTH, yUL - height,9, height,GxEPD_RED);
+    }
   }
 }
 
@@ -265,7 +298,7 @@ void DisplayWXicon(int x, int y, String IconName, uint16_t color) {
 void GetEnergyOverview(){
   	HTTPClient httpClient;
     String address = "http://raspberrypi3bp:8086/query";
-    String params = "q=SELECT difference(first(\"value\")) AS \"sum_value\" FROM \"telegraf\".\"autogen\".\"mqtt_consumer\" WHERE \"topic\"='fhem/energy/total/kwh/state' AND time < now() and time > now() - 1d GROUP BY time(1h)";
+    String params = "q=SELECT difference(first(\"value\")) AS \"sum_value\" FROM \"telegraf\".\"autogen\".\"mqtt_consumer\" WHERE \"topic\"='fhem/energy/total/kwh/state' AND time < now() and time > now() - 1d GROUP BY time(1h) FILL(previous)";
     params.replace(" ", "%20");
     httpClient.begin(address + "?" + params);
 
@@ -371,4 +404,17 @@ void SendToSleep(int mins) {
   WiFi.mode(WIFI_OFF);Serial.println("].");
   delay(500);
    ESP.deepSleep(mins * 60000000);
+}
+
+void DrawDottedHLine(uint16_t x, uint16_t y, uint16_t length, uint16_t interval,  uint16_t color)
+{
+  for(int dx = x; dx < x + length; dx += interval ){
+    display.drawPixel(dx,y,color);
+  }
+}
+void DrawDottedVLine(uint16_t x, uint16_t y, uint16_t length, uint16_t interval,  uint16_t color)
+{
+  for(int dy = y; dy < y + length; dy += interval ){
+    display.drawPixel(x,dy,color);
+  }
 }
